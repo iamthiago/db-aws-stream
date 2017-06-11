@@ -17,7 +17,7 @@ object Boot extends App {
   implicit val system = ActorSystem()
   implicit val materializer = ActorMaterializer()
 
-  val addressToString = Flow[Address].map(_.toString) //TODO: make it a json string or similar
+  val addressToString = Flow[Address].map(_.toString)
 
   Source
     .fromPublisher(AddressRepository.stream())
