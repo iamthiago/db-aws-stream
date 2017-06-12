@@ -1,26 +1,44 @@
 package com.stream
 
 import akka.actor.ActorSystem
+import akka.http.scaladsl.Http
+import akka.http.scaladsl.model.StatusCodes._
+import akka.http.scaladsl.server.Directives._
+import akka.http.scaladsl.server.Route
+import akka.pattern.ask
 import akka.stream.ActorMaterializer
-import akka.stream.alpakka.sns.scaladsl._
-import akka.stream.scaladsl._
-import com.amazonaws.auth.{AWSStaticCredentialsProvider, BasicAWSCredentials}
-import com.amazonaws.services.sns.{AmazonSNSAsync, AmazonSNSAsyncClientBuilder}
-import com.stream.database.{Address, AddressRepository}
+import akka.util.Timeout
+import com.stream.directives.RequestIdDirective
+import com.stream.service.StreamActor
+import com.stream.service.StreamActor._
+import org.slf4j.LoggerFactory
 
-object Boot extends App {
+import scala.util.{Failure, Success}
+import scala.concurrent.duration._
 
-  val credentials = new BasicAWSCredentials("x", "x")
-  implicit val snsClient: AmazonSNSAsync =
-    AmazonSNSAsyncClientBuilder.standard().withCredentials(new AWSStaticCredentialsProvider(credentials)).build()
+object Boot extends App with RequestIdDirective {
+
+  val log = LoggerFactory.getLogger(this.getClass)
 
   implicit val system = ActorSystem()
   implicit val materializer = ActorMaterializer()
+  implicit val executionContext = system.dispatcher
+  implicit val timeout = Timeout(1.second)
 
-  val addressToString = Flow[Address].map(_.toString)
+  val route: Route = path("stream" / Segment) { topic =>
+    get {
+      extractRequestId { requestId =>
+        val streamActor = system.actorOf(StreamActor.props(requestId, topic), StreamActor.name(requestId))
+        onComplete((streamActor ? Begin).mapTo[Started]) {
+          case Success(result) => complete(Accepted, s"The stream has been successfully initiate to topic: ${result.topic}")
+          case Failure(e) => complete(InternalServerError, s"Something went wrong: $e")
+        }
+      }
+    }
+  }
 
-  Source
-    .fromPublisher(AddressRepository.stream())
-    .via(addressToString)
-    .runWith(SnsPublisher.sink("my-sns-topic"))
+  Http().bindAndHandle(route, "localhost", 8080).onComplete {
+    case Success(_) => log.info("Application Started")
+    case Failure(e) => log.error("Could not start the server", e)
+  }
 }
